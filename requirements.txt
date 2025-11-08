@@ -1,0 +1,12 @@
+pandas
+scikit-learn
+sentence-transformers
+google-generativeai
+tqdm
+python-dotenv
+fastapi
+uvicorn[standard]
+pydantic
+streamlit
+plotly
+requests
