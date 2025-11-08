@@ -34,7 +34,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initia
 model = None
 
 @app.on_event("startup")
@@ -227,9 +226,9 @@ async def process_single_lead_async(lead: LeadInput, semaphore: asyncio.Semaphor
 @app.post("/score/batch", response_model=LeadBatchScore)
 async def score_leads_batch(batch: LeadBatchInput):
     """
-    Score multiple leads in batch with 100 concurrent workers (NLP is instant!).
+    Score multiple leads in batch with 10 concurrent workers.
     
-    Flow: Frontend → This endpoint → 100 Parallel Workers → Response
+    Flow: Frontend → This endpoint → 10 Parallel Workers → Response
     
     Args:
         batch: LeadBatchInput object with list of leads
@@ -243,10 +242,10 @@ async def score_leads_batch(batch: LeadBatchInput):
             detail="Gemini API not initialized. Please check your GEMINI_API_KEY."
         )
     
-    # Create a semaphore to limit concurrent workers to 100 (NLP is CPU-light)
-    semaphore = asyncio.Semaphore(100)
+    # Create a semaphore to limit concurrent workers to 10
+    semaphore = asyncio.Semaphore(10)
     
-    # Process all leads concurrently with 100 workers
+    # Process all leads concurrently with 10 workers
     tasks = [process_single_lead_async(lead, semaphore) for lead in batch.leads]
     results = await asyncio.gather(*tasks)
     

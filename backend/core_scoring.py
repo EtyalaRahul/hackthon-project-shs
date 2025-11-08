@@ -31,8 +31,8 @@ def initialize_gemini():
     
     generation_config = genai.GenerationConfig(
         response_mime_type="application/json",
-        temperature=0.3,  # Lower temperature for faster, more consistent responses
-        max_output_tokens=200,  # Limit output for faster responses
+        temperature=0.3,  
+        max_output_tokens=200,  
         top_p=0.8,
         top_k=20
     )

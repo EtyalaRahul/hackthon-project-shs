@@ -334,21 +334,21 @@ LOWEST-SCORING 5 LEADS:{bottom_leads_text}
 
 QUESTION: {query}
 
-RESPONSE INSTRUCTIONS:
-** CRITICAL: Your response MUST be in plain English paragraphs and sentences! **
-- Answer the question directly using the lead data above
-- Write naturally like you're talking to a colleague
-- If asked for top leads, list them with names, companies, and contact info
-- If asked for lowest/least leads, list them from the LOWEST-SCORING section above
-- NEVER mention JSON, data formats, or technical terms
-- Just provide the information naturally
+CRITICAL INSTRUCTIONS - YOU MUST FOLLOW EXACTLY:
+1. Write your answer as a CONVERSATIONAL PARAGRAPH, like you're talking to a friend
+2. DO NOT use lists, bullet points, numbered items, or structured formats
+3. DO NOT use quotation marks around field values
+4. DO NOT separate data with commas like "name", "company", "role"
+5. Write full sentences that flow naturally
+6. Include names, titles, companies, and emails IN the sentences naturally
 
-GOOD EXAMPLES:
-"Your top 5 leads are: 1) Christopher Davis from Finance Corp (CTO, score 95/100, cdavis@finance.com) who has urgent migration needs, 2) Ashley Wilson from Healthcare Systems..."
+GOOD EXAMPLE (what TO do):
+"Based on your leads, I'd recommend reaching out to Jacob Turner first. He's a COO at Prime Consulting with a perfect score of 100/100, and you can contact him at jacob.turner@corp.com. He has urgent needs for vendor replacement. Your second priority should be Patricia Brown who is the Operations Director at Strategic Ventures, also scoring 100/100. Her email is patricia.brown@business.com and she's dealing with a critical platform issue."
 
-"The 5 lowest-scoring leads are: 1) John Smith from ABC Inc (Student, score 5/100, jsmith@abc.com), 2) Jane Doe..."
+BAD EXAMPLE (what NOT to do):
+"Jacob Turner", "Prime Consulting", "COO", "100/100", "jacob.turner@corp.com"
 
-Now answer the question naturally:"""
+Now write your answer as a natural, flowing paragraph:"""
 
     return prompt
 
@@ -430,7 +430,13 @@ def is_lead_related_question(query: str) -> bool:
 
 def chat_with_leads(model, query: str, leads_data: list) -> dict:
     """
-    Process a chat query - handles both lead-related and casual questions.
+    Process a chat query with SMART API USAGE to minimize rate limits.
+    
+    STEP 1: Query leads data and get response (1 API call)
+    STEP 2: Check if conversion needed - ONLY make 2nd API call if format is bad
+    STEP 3: Python post-processing to strip any remaining JSON wrappers
+    
+    This approach minimizes API calls (usually just 1) while ensuring natural text output.
     
     Args:
         model: Initialized Gemini model
@@ -438,7 +444,7 @@ def chat_with_leads(model, query: str, leads_data: list) -> dict:
         leads_data: List of scored leads
         
     Returns:
-        dict: Response with answer and metadata
+        dict: Response with answer (guaranteed plain text) and metadata
     """
     try:
         # Check if question is about leads or just casual chat
@@ -466,31 +472,45 @@ def chat_with_leads(model, query: str, leads_data: list) -> dict:
             # NO response_mime_type - defaults to plain text!
         )
         
-        # Get LLM response with text-only config
+        # ============================================================
+        # STEP 1: Get raw response from LLM (might be JSON/structured)
+        # ============================================================
         response = model.generate_content(
             prompt,
             generation_config=text_config
         )
         raw_answer = response.text.strip()
         
-        # Check if response contains technical/JSON terminology and clean it up
-        if any(term in raw_answer.lower() for term in ['json', '{', '[', 'dictionary', 'data structure', 'provided data']):
-            # Use LLM to rewrite in natural language
-            conversion_prompt = f"""The following response contains technical terminology or data format references.
-Rewrite it as a natural, friendly response.
+        # ============================================================
+        # STEP 2: Check if conversion is needed (avoid extra API call)
+        # Only do second LLM call if response has problematic formatting
+        # ============================================================
+        import re
+        
+        # Check if raw answer has problematic formatting
+        needs_conversion = False
+        
+        # Pattern 1: Starts with JSON object
+        if raw_answer.startswith('{') and raw_answer.endswith('}'):
+            needs_conversion = True
+        # Pattern 2: Multiple comma-separated quoted strings
+        elif re.search(r'"[^"]+"\s*,\s*"[^"]+"\s*,\s*"[^"]+"', raw_answer):
+            needs_conversion = True
+        # Pattern 3: Contains JSON field names
+        elif any(term in raw_answer.lower() for term in ['"summary":', '"response":', '"answer":', '"message":']):
+            needs_conversion = True
+        
+        if needs_conversion:
+            # Make second API call to convert to natural language
+            conversion_prompt = f"""Rewrite this as natural, conversational text without any JSON or structured formatting:
 
-ORIGINAL RESPONSE:
 {raw_answer}
 
-QUESTION WAS: {query}
-
-Rewrite this as a natural answer without mentioning JSON, data formats, or technical terms.
-Just answer the question directly and naturally in 2-5 sentences.
-Be specific with names, companies, scores, and emails if they were in the original response."""
+Write it as if you're talking to a colleague. No quotes, brackets, or comma-separated values. Just natural sentences."""
 
             conversion_config = genai.GenerationConfig(
                 temperature=0.7,
-                max_output_tokens=400
+                max_output_tokens=500
             )
             
             conversion_response = model.generate_content(
@@ -499,8 +519,45 @@ Be specific with names, companies, scores, and emails if they were in the origin
             )
             answer = conversion_response.text.strip()
         else:
-            # Already natural language
+            # Already natural language, skip second API call
             answer = raw_answer
+        
+        # ============================================================
+        # STEP 3: Python post-processing to remove any remaining JSON
+        # ============================================================
+        import re
+        
+        # Try to parse as JSON and extract text content
+        try:
+            # Check if it's still JSON
+            if answer.startswith('{') and answer.endswith('}'):
+                data = json.loads(answer)
+                # Extract from common JSON fields
+                if 'summary' in data:
+                    answer = data['summary']
+                elif 'response' in data:
+                    answer = data['response']
+                elif 'answer' in data:
+                    answer = data['answer']
+                elif 'message' in data:
+                    answer = data['message']
+        except (json.JSONDecodeError, KeyError):
+            # Not JSON or failed to parse, keep as is
+            pass
+        
+        # Check if answer is comma-separated quoted strings (e.g., "name", "company", "role")
+        # Pattern: multiple quoted strings separated by commas
+        if re.search(r'"[^"]+"\s*,\s*"[^"]+"', answer):
+            # This is structured data, convert to readable text
+            # Extract all quoted values
+            values = re.findall(r'"([^"]+)"', answer)
+            if len(values) >= 3:
+                # Try to reconstruct as natural text
+                # Assume pattern might be: name, company, role, score, email
+                answer = f"Lead information: {' | '.join(values)}"
+        
+        # Remove any remaining quotes around the entire string
+        answer = answer.strip('"').strip("'")
         
         return {
             "answer": answer,
@@ -510,10 +567,21 @@ Be specific with names, companies, scores, and emails if they were in the origin
         }
         
     except Exception as e:
+        error_msg = str(e)
+        
+        # Handle rate limit errors specifically
+        if "429" in error_msg or "Resource exhausted" in error_msg:
+            return {
+                "answer": "I've hit the API rate limit. The free tier of Gemini API has limited requests per minute. Please wait a moment and try again, or consider upgrading your API plan.",
+                "success": False,
+                "error": "Rate limit exceeded (429)",
+                "leads_analyzed": len(leads_data) if leads_data else 0
+            }
+        
         return {
-            "answer": f"Sorry, I encountered an error: {str(e)}",
+            "answer": f"Sorry, I encountered an error: {error_msg}",
             "success": False,
-            "error": str(e),
+            "error": error_msg,
             "leads_analyzed": len(leads_data) if leads_data else 0
         }
 
