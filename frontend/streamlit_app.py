@@ -264,6 +264,16 @@ def main():
     
     # Sidebar
     with st.sidebar:
+        # Navigation
+        st.header("📍 Navigation")
+        page = st.radio(
+            "Select Page",
+            ["Batch Processing", "Analytics Dashboard", "💬 Chat Agent", "Score Single Lead"],
+            label_visibility="collapsed"
+        )
+        
+        st.divider()
+        
         st.header("⚙️ System Status")
         
         # Backend Status
@@ -292,16 +302,6 @@ def main():
         4. 🤖 Gemini LLM
         5. 🔙 Response back to Frontend
         """)
-        
-        st.divider()
-        
-        # Navigation
-        st.header("📍 Navigation")
-        page = st.radio(
-            "Select Page",
-            ["Score Single Lead", "Batch Processing", "Analytics Dashboard", "💬 Chat Agent"],
-            label_visibility="collapsed"
-        )
         
         st.divider()
         
