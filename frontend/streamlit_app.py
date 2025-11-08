@@ -111,7 +111,7 @@ def score_lead_api(role, company_size, message):
     """
     Send lead to backend API for scoring.
     
-    Flow: Frontend (this) → Backend API → Gemini LLM → Backend → Frontend
+    Flow: Frontend (this) → Backend API → NLP Scorer → Backend → Frontend
     """
     try:
         response = requests.post(
@@ -121,7 +121,7 @@ def score_lead_api(role, company_size, message):
                 "company_size": company_size,
                 "message": message
             },
-            timeout=30
+            timeout=5  # Fast NLP scoring
         )
         
         if response.status_code == 200:
@@ -140,7 +140,7 @@ def score_lead_api(role, company_size, message):
             "justification": "Request timeout",
             "priority_label": "🚫 Junk/Error",
             "success": False,
-            "error": "Request timed out after 30 seconds"
+            "error": "Request timed out after 5 seconds"
         }
     except Exception as e:
         return {
@@ -156,13 +156,13 @@ def score_batch_api(leads):
     """
     Send multiple leads to backend API for batch scoring.
     
-    Flow: Frontend (this) → Backend API → Gemini LLM (batch) → Backend → Frontend
+    Flow: Frontend (this) → Backend API → NLP Scorer (batch) → Backend → Frontend
     """
     try:
         response = requests.post(
             f"{BACKEND_URL}/score/batch",
             json={"leads": leads},
-            timeout=300  # 5 minutes for batch
+            timeout=120  # 2 minutes max (100 concurrent workers)
         )
         
         if response.status_code == 200:
@@ -259,7 +259,7 @@ def main():
     
     # Header
     st.title("🎯 AI Lead Scoring & Prioritization Agent")
-    st.markdown("**Frontend → Backend API → Google Gemini LLM**")
+    st.markdown("**Frontend → Backend API → NLP Scoring (Instant)**")
     st.divider()
     
     # Sidebar
@@ -299,7 +299,7 @@ def main():
         1. 📱 Frontend (Streamlit)
         2. 🔄 HTTP Request
         3. 🖥️ Backend API (FastAPI)
-        4. 🤖 Gemini LLM
+        4. ⚡ NLP Scorer (Instant)
         5. 🔙 Response back to Frontend
         """)
         
@@ -381,7 +381,7 @@ def show_single_lead_page():
             if not role or not message:
                 st.error("Please fill in all required fields (Role and Message)")
             else:
-                with st.spinner("🔄 Sending to backend API... → Gemini LLM..."):
+                with st.spinner("⚡ Calculating score using NLP..."):
                     result = score_lead_api(role, company_size, message)
                 
                 if result and result.get('success'):
@@ -424,8 +424,8 @@ def show_single_lead_page():
             st.markdown("""
             1. You enter lead info
             2. Frontend sends to Backend
-            3. Backend calls Gemini LLM
-            4. LLM analyzes and scores
+            3. Backend uses NLP scoring
+            4. Instant score calculation
             5. Results return to you
             """)
 
@@ -474,77 +474,71 @@ def show_batch_processing_page():
             if st.button("🚀 Process All Leads", type="primary", use_container_width=True):
                 progress_bar = st.progress(0)
                 status_text = st.empty()
-                time_estimate = st.empty()
                 
                 total_leads = len(df)
                 start_time = time.time()
                 
-                status_text.text(f"🔄 Processing {total_leads} leads...")
-                time_estimate.text("⏱️ Estimated time: Calculating...")
+                status_text.text(f"⚡ Processing {total_leads} leads in parallel (100 concurrent workers)...")
+                progress_bar.progress(0.5)
                 
-                # Process leads one by one with progress updates
-                results = []
-                successful = 0
-                failed = 0
+                # Prepare leads for batch API
+                leads_list = []
+                for _, row in df.iterrows():
+                    leads_list.append({
+                        "role": str(row['role']),
+                        "company_size": str(row['company_size']),
+                        "message": str(row['message'])
+                    })
                 
-                for idx, (_, row) in enumerate(df.iterrows()):
-                    # Update progress
-                    progress = (idx + 1) / total_leads
-                    progress_bar.progress(progress)
+                # Clean the data for JSON serialization
+                leads_list = clean_lead_data_for_json(leads_list)
+                
+                # Send all leads in ONE batch request (backend processes 10 at a time)
+                try:
+                    batch_result = score_batch_api(leads_list)
                     
-                    # Calculate time estimates
-                    if idx > 0:
-                        elapsed = time.time() - start_time
-                        avg_time_per_lead = elapsed / idx
-                        remaining_leads = total_leads - idx
-                        eta_seconds = remaining_leads * avg_time_per_lead
-                        eta_minutes = int(eta_seconds / 60)
-                        eta_secs = int(eta_seconds % 60)
-                        time_estimate.text(f"⏱️ Processing lead {idx+1}/{total_leads} - ETA: {eta_minutes}m {eta_secs}s")
-                    else:
-                        time_estimate.text(f"⏱️ Processing lead {idx+1}/{total_leads}...")
-                    
-                    status_text.text(f"🔄 Scoring: {row.get('full_name', f'Lead #{idx+1}')}")
-                    
-                    # Score this lead
-                    try:
-                        score_result = score_lead_api(
-                            role=row['role'],
-                            company_size=row['company_size'],
-                            message=row['message']
-                        )
+                    if batch_result:
+                        # Merge results with original data
+                        results = []
+                        for idx, (_, row) in enumerate(df.iterrows()):
+                            result_dict = row.to_dict()
+                            if idx < len(batch_result['results']):
+                                score_data = batch_result['results'][idx]
+                                result_dict['score'] = score_data['score']
+                                result_dict['justification'] = score_data['justification']
+                                result_dict['priority_label'] = score_data['priority_label']
+                            else:
+                                result_dict['score'] = 0
+                                result_dict['justification'] = 'Not processed'
+                                result_dict['priority_label'] = '🚫 Junk/Error'
+                            results.append(result_dict)
                         
-                        if score_result and score_result.get('success'):
-                            result_dict = row.to_dict()
-                            result_dict['score'] = score_result['score']
-                            result_dict['justification'] = score_result['justification']
-                            result_dict['priority_label'] = score_result['priority_label']
-                            results.append(result_dict)
-                            successful += 1
-                        else:
-                            # Failed scoring
-                            result_dict = row.to_dict()
-                            result_dict['score'] = 0
-                            result_dict['justification'] = 'Failed to score'
-                            result_dict['priority_label'] = '🚫 Junk/Error'
-                            results.append(result_dict)
-                            failed += 1
-                    except Exception as e:
-                        result_dict = row.to_dict()
-                        result_dict['score'] = 0
-                        result_dict['justification'] = f'Error: {str(e)}'
-                        result_dict['priority_label'] = '🚫 Junk/Error'
-                        results.append(result_dict)
-                        failed += 1
+                        successful = batch_result['successful']
+                        failed = batch_result['failed']
+                    else:
+                        st.error("❌ Batch processing failed")
+                        results = []
+                        successful = 0
+                        failed = total_leads
+                        
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+                    results = []
+                    successful = 0
+                    failed = total_leads
                 
                 # Complete
                 total_time = time.time() - start_time
-                minutes = int(total_time / 60)
-                seconds = int(total_time % 60)
                 
-                status_text.text(f"✅ Processing complete in {minutes}m {seconds}s!")
-                time_estimate.text(f"📊 Processed {successful} successful, {failed} failed")
-                progress_bar.progress(100)
+                if total_time < 60:
+                    time_str = f"{total_time:.1f}s"
+                else:
+                    minutes = int(total_time / 60)
+                    seconds = int(total_time % 60)
+                    time_str = f"{minutes}m {seconds}s"
+                
+                status_text.text(f"✅ Processing complete in {time_str}!")
+                progress_bar.progress(1.0)
                 
                 if results:
                     

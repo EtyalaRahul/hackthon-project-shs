@@ -290,32 +290,36 @@ def create_chat_prompt(query: str, leads_data: list) -> str:
     medium_priority = len([l for l in leads_data if 40 <= l.get('score', 0) < 80])
     low_priority = len([l for l in leads_data if 0 < l.get('score', 0) < 40])
     
-    # Get top 10 leads for context
-    top_leads = sorted(leads_data, key=lambda x: x.get('score', 0), reverse=True)[:10]
+    # Get top 10 AND bottom 5 leads for context
+    sorted_leads = sorted(leads_data, key=lambda x: x.get('score', 0), reverse=True)
+    top_leads = sorted_leads[:10]
+    bottom_leads = sorted_leads[-5:] if len(sorted_leads) > 10 else []
     
-    # Format lead data with cleaned values
-    leads_summary = []
+    # Format top leads
+    top_leads_text = ""
     for idx, lead in enumerate(top_leads, 1):
-        lead_info = {
-            'rank': idx,
-            'name': clean_value(lead.get('full_name', 'Unknown')),
-            'email': clean_value(lead.get('email', 'N/A')),
-            'company': clean_value(lead.get('company_name', 'N/A')),
-            'role': clean_value(lead.get('role', 'N/A')),
-            'company_size': clean_value(lead.get('company_size', 'N/A')),
-            'score': int(lead.get('score', 0)) if lead.get('score') else 0,
-            'priority': clean_value(lead.get('priority_label', 'N/A')),
-            'justification': clean_value(lead.get('justification', 'N/A')),
-            'message': clean_value(lead.get('message', 'N/A'))[:100] + '...' if len(str(lead.get('message', ''))) > 100 else clean_value(lead.get('message', 'N/A'))
-        }
-        leads_summary.append(lead_info)
+        name = clean_value(lead.get('full_name', 'Unknown'))
+        company = clean_value(lead.get('company_name', 'N/A'))
+        role = clean_value(lead.get('role', 'N/A'))
+        score = int(lead.get('score', 0)) if lead.get('score') else 0
+        email = clean_value(lead.get('email', 'N/A'))
+        justification = clean_value(lead.get('justification', 'N/A'))
+        
+        top_leads_text += f"\n{idx}. {name} from {company} - {role} - Score: {score}/100 - Email: {email}"
+        if justification and justification != 'N/A':
+            top_leads_text += f"\n   Why: {justification}"
     
-    # Format leads in a more readable way for the prompt
-    leads_text = ""
-    for lead in leads_summary:
-        leads_text += f"\n- {lead['name']} from {lead['company']} ({lead['role']}) - Score: {lead['score']}/100"
-        if lead.get('justification'):
-            leads_text += f"\n  Reason: {lead['justification']}"
+    # Format bottom leads
+    bottom_leads_text = ""
+    if bottom_leads:
+        for idx, lead in enumerate(bottom_leads, 1):
+            name = clean_value(lead.get('full_name', 'Unknown'))
+            company = clean_value(lead.get('company_name', 'N/A'))
+            role = clean_value(lead.get('role', 'N/A'))
+            score = int(lead.get('score', 0)) if lead.get('score') else 0
+            email = clean_value(lead.get('email', 'N/A'))
+            
+            bottom_leads_text += f"\n{idx}. {name} from {company} - {role} - Score: {score}/100 - Email: {email}"
     
     prompt = f"""You are a helpful AI Sales Assistant. A sales team member is asking you about their leads.
 
@@ -324,19 +328,25 @@ CONTEXT - You have analyzed {total_leads} leads:
 • {medium_priority} Medium Priority leads (scores 40-79)  
 • {low_priority} Low Priority leads (scores 1-39)
 
-Top Leads:{leads_text}
+TOP 10 HIGHEST-SCORING LEADS:{top_leads_text}
+
+LOWEST-SCORING 5 LEADS:{bottom_leads_text}
 
 QUESTION: {query}
 
 RESPONSE INSTRUCTIONS:
-1. Write your answer in plain English sentences and paragraphs
-2. DO NOT use JSON, dictionaries, or code-like syntax
-3. Write naturally like you're talking to a colleague
-4. Use simple bullet points if listing multiple items
-5. Mention specific names and details from the data above
+** CRITICAL: Your response MUST be in plain English paragraphs and sentences! **
+- Answer the question directly using the lead data above
+- Write naturally like you're talking to a colleague
+- If asked for top leads, list them with names, companies, and contact info
+- If asked for lowest/least leads, list them from the LOWEST-SCORING section above
+- NEVER mention JSON, data formats, or technical terms
+- Just provide the information naturally
 
-Example good response style:
-"Based on the data, Christopher Davis from Finance Corp is your top lead with a score of 100/100. He's a Chief Revenue Officer and has urgent migration needs. I'd recommend reaching out to him first at cdavis@finance.com."
+GOOD EXAMPLES:
+"Your top 5 leads are: 1) Christopher Davis from Finance Corp (CTO, score 95/100, cdavis@finance.com) who has urgent migration needs, 2) Ashley Wilson from Healthcare Systems..."
+
+"The 5 lowest-scoring leads are: 1) John Smith from ABC Inc (Student, score 5/100, jsmith@abc.com), 2) Jane Doe..."
 
 Now answer the question naturally:"""
 
@@ -463,8 +473,34 @@ def chat_with_leads(model, query: str, leads_data: list) -> dict:
         )
         raw_answer = response.text.strip()
         
-        # Convert JSON to natural language if needed
-        answer = convert_to_natural_language(raw_answer, query)
+        # Check if response contains technical/JSON terminology and clean it up
+        if any(term in raw_answer.lower() for term in ['json', '{', '[', 'dictionary', 'data structure', 'provided data']):
+            # Use LLM to rewrite in natural language
+            conversion_prompt = f"""The following response contains technical terminology or data format references.
+Rewrite it as a natural, friendly response.
+
+ORIGINAL RESPONSE:
+{raw_answer}
+
+QUESTION WAS: {query}
+
+Rewrite this as a natural answer without mentioning JSON, data formats, or technical terms.
+Just answer the question directly and naturally in 2-5 sentences.
+Be specific with names, companies, scores, and emails if they were in the original response."""
+
+            conversion_config = genai.GenerationConfig(
+                temperature=0.7,
+                max_output_tokens=400
+            )
+            
+            conversion_response = model.generate_content(
+                conversion_prompt,
+                generation_config=conversion_config
+            )
+            answer = conversion_response.text.strip()
+        else:
+            # Already natural language
+            answer = raw_answer
         
         return {
             "answer": answer,
